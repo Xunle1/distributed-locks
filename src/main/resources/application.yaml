@@ -6,3 +6,6 @@ spring:
     url: jdbc:mysql://127.0.0.1:3306/distributed_lock
     username: root
     password: root
+  redis:
+    host: ubuntu2204.wsl
+    port: 6379

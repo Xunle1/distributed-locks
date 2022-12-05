@@ -5,10 +5,16 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.xunle.distributed.locks.domain.Stock;
 import com.xunle.distributed.locks.mapper.StockMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.core.RedisOperations;
+import org.springframework.data.redis.core.SessionCallback;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -23,7 +29,55 @@ public class StockService {
     @Autowired
     private StockMapper stockMapper;
 
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+
     public void deduct() {
+        // redis setnx分布式锁
+        UUID uuid = UUID.randomUUID();
+        while (!this.redisTemplate.opsForValue().setIfAbsent("lock", uuid.toString(), 3, TimeUnit.SECONDS)) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        try {
+            String stock = this.redisTemplate.opsForValue().get("stock");
+            if (stock != null && Integer.parseInt(stock) > 0) {
+                this.redisTemplate.opsForValue().set("stock", String.valueOf(Integer.parseInt(stock) - 1));
+            }
+        } finally {
+            if (uuid.toString().equals(this.redisTemplate.opsForValue().get("lock"))) {
+                this.redisTemplate.delete("lock");
+            }
+        }
+    }
+
+    public void deduct4() {
+        // redis 事务乐观锁
+        this.redisTemplate.execute(new SessionCallback<Object>() {
+            @Override
+            public Object execute(RedisOperations operations) throws DataAccessException {
+                while (true) {
+                    operations.watch("stock");
+                    String stock = (String) operations.opsForValue().get("stock");
+
+                    if (stock != null && Integer.parseInt(stock) > 0) {
+                        operations.multi();
+                        operations.opsForValue().set("stock", String.valueOf(Integer.parseInt(stock) - 1));
+                        List<Object> exec = operations.exec();
+                        if (exec.size() > 0) return exec;
+                    }
+                    if (Integer.parseInt(stock) == 0) {
+                        return null;
+                    }
+                }
+            }
+        });
+    }
+
+    public void deduct3() {
         // 乐观锁
         List<Stock> stocks = this.stockMapper.selectList(new QueryWrapper<Stock>().eq("product_code", "1001"));
         Stock stock = stocks.get(0);
