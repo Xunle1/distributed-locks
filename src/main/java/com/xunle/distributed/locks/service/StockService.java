@@ -9,9 +9,12 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.SessionCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -35,7 +38,7 @@ public class StockService {
     public void deduct() {
         // redis setnx分布式锁
         UUID uuid = UUID.randomUUID();
-        while (!this.redisTemplate.opsForValue().setIfAbsent("lock", uuid.toString(), 3, TimeUnit.SECONDS)) {
+        while (!this.redisTemplate.opsForValue().setIfAbsent("lock", uuid.toString(), 60, TimeUnit.SECONDS)) {
             try {
                 Thread.sleep(50);
             } catch (InterruptedException e) {
@@ -43,14 +46,19 @@ public class StockService {
             }
         }
         try {
+            // 业务逻辑
             String stock = this.redisTemplate.opsForValue().get("stock");
             if (stock != null && Integer.parseInt(stock) > 0) {
                 this.redisTemplate.opsForValue().set("stock", String.valueOf(Integer.parseInt(stock) - 1));
             }
         } finally {
-            if (uuid.toString().equals(this.redisTemplate.opsForValue().get("lock"))) {
-                this.redisTemplate.delete("lock");
-            }
+            // 释放锁 防误删
+            String checkAndDeleteScript = new StringBuilder()
+                    .append("if (redis.call('get', 'lock') == ARGV[1]) then redis.call('del', 'lock') return 0 else return 1 end")
+                    .toString();
+            RedisScript redisScript = new DefaultRedisScript(checkAndDeleteScript, Long.class);
+            Long result = (Long)this.redisTemplate.execute(redisScript, new ArrayList<>(), uuid.toString());
+            System.out.println(result);
         }
     }
 
